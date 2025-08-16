@@ -7,7 +7,7 @@ interface Location {
 
 interface UseGeolocationReturn {
   location: Location | null;
-  loading: Boolean;
+  loading: boolean;
   error: string | null;
   getCurrentLocation: () => void;
 }
