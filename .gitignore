@@ -99,3 +99,6 @@ temp/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Claude Code files
+CLAUDE.md

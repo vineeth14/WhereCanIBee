@@ -17,3 +17,9 @@ export const healthCheck = async (): Promise<HealthResponse> => {
   const response = await api.get<HealthResponse>("/health");
   return response.data;
 };
+
+export const getWalkingArea = async (lat: number, lng: number) => {
+  const response = await api.post("/isochrone", { lat, lng });
+  return response.data;
+};
+
