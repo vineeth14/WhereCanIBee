@@ -1,19 +1,13 @@
 const axios = require("axios");
 
 const getIsochrone = async (lat, lng) => {
-  const response = await axios.post(
-    "https://api.openrouteservice.org/v2/isochrones/foot-walking",
+  const response = await axios.get(
+    `https://api.mapbox.com/isochrone/v1/mapbox/walking/${lng},${lat}`,
     {
-      locations: [[lng, lat]],
-      range: [1800],
-      range_type: "time",
-      attributes: ["area", "reachfactor"],
-      smoothing: 0.1,
-    },
-    {
-      headers: {
-        Authorization: process.env.ORS_API_KEY,
-        "Content-Type": "application/json",
+      params: {
+        contours_minutes: 30,
+        polygons: true,
+        access_token: process.env.MAPBOX_API_KEY,
       },
     },
   );

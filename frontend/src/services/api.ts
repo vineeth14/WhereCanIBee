@@ -23,3 +23,7 @@ export const getWalkingArea = async (lat: number, lng: number) => {
   return response.data;
 };
 
+export const getPOIs = async (polygon: any, category: string) => {
+  const response = await api.post("/pois", { polygon, category });
+  return response.data;
+};

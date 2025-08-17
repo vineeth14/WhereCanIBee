@@ -4,6 +4,7 @@ const cors = require("cors");
 require("dotenv").config();
 const axios = require("axios");
 const { getIsochrone } = require("./services/orsService");
+const { getPOIs } = require("./services/poiService");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -38,6 +39,23 @@ app.post("/api/isochrone", async (req, res) => {
     res.status(500).json({ error: "Failed to generate walking area" });
   }
 });
+
+app.post("/api/pois", async (req, res) => {
+  try {
+    const { polygon, category } = req.body;
+    
+    if (!polygon || !category) {
+      return res.status(400).json({ error: "Polygon and category required" });
+    }
+
+    const pois = await getPOIs(polygon, category);
+    res.json({ pois, category, count: pois.length });
+  } catch (error) {
+    console.error('POI API error:', error.message);
+    res.status(500).json({ error: "Failed to fetch POIs" });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
