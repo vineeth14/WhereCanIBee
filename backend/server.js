@@ -43,7 +43,7 @@ app.post("/api/isochrone", async (req, res) => {
 app.post("/api/pois", async (req, res) => {
   try {
     const { polygon, category } = req.body;
-    
+
     if (!polygon || !category) {
       return res.status(400).json({ error: "Polygon and category required" });
     }
@@ -51,7 +51,7 @@ app.post("/api/pois", async (req, res) => {
     const pois = await getPOIs(polygon, category);
     res.json({ pois, category, count: pois.length });
   } catch (error) {
-    console.error('POI API error:', error.message);
+    console.error("POI API error:", error.message);
     res.status(500).json({ error: "Failed to fetch POIs" });
   }
 });
@@ -59,4 +59,3 @@ app.post("/api/pois", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
