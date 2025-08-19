@@ -4,6 +4,7 @@ import L from "leaflet";
 import { useGeolocation } from "../../hooks/useGeolocation";
 import { healthCheck, api, getWalkingArea, getPOIs } from "../../services/api";
 import "leaflet/dist/leaflet.css";
+import { useSSEPOIUpdates } from '../../hooks/useSSEPOIUpdates';
 
 // Component to handle map events
 const MapEventHandler = ({ onZoomEnd }: { onZoomEnd: (zoom: number) => void }) => {
@@ -34,6 +35,8 @@ const Map: React.FC = () => {
     restaurants: false,
     recreation: false,
   });
+  const [currentPolygonHash, setCurrentPolygonHash] = useState('');
+  const [lastPOIUpdate, setLastPOIUpdate] = useState(Date.now());
   const [currentZoom, setCurrentZoom] = useState(14);
   const mapRef = useRef<L.Map | null>(null);
 
@@ -68,6 +71,36 @@ const Map: React.FC = () => {
   useEffect(() => {
     getCurrentLocation();
   }, []);
+
+  // Update polygon hash when isochrone changes
+  useEffect(() => {
+    const generatePolygonHash = async () => {
+      if (isochrone) {
+        const data = JSON.stringify(isochrone);
+        const encoder = new TextEncoder();
+        const dataBuffer = encoder.encode(data);
+        const hashBuffer = await crypto.subtle.digest('SHA-256', dataBuffer);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        setCurrentPolygonHash(hashHex);
+      }
+    };
+    
+    generatePolygonHash();
+  }, [isochrone]);
+
+  // SSE update handler
+  const handleSSEPOIUpdate = (category: 'restaurants' | 'recreation', newPOIs: any[]) => {
+    console.log(`🎉 Received ${newPOIs.length} new ${category} POIs via SSE`);
+    setPois(prev => ({
+      ...prev,
+      [category]: [...prev[category], ...newPOIs]
+    }));
+  };
+
+  // SSE hooks for real-time updates
+  useSSEPOIUpdates('restaurants', showCategories.restaurants, currentPolygonHash, handleSSEPOIUpdate);
+  useSSEPOIUpdates('recreation', showCategories.recreation, currentPolygonHash, handleSSEPOIUpdate);
 
   if (loading) return <div>Getting your location...</div>;
   if (error && !location) return <div> Error: {error}</div>;
@@ -275,6 +308,7 @@ const Map: React.FC = () => {
         console.log(`${category} POIs received:`, result.pois);
         console.log(`${category} POI count:`, result.pois.length);
         setPois((prev) => ({ ...prev, [category]: result.pois }));
+        setLastPOIUpdate(Date.now());
       } catch (error) {
         console.error(`Failed to get ${category} POIs:`, error);
       } finally {

@@ -5,6 +5,8 @@ require("dotenv").config();
 const axios = require("axios");
 const { getIsochrone } = require("./services/orsService");
 const { getPOIs } = require("./services/poiService");
+const cacheService = require("./services/cacheService");
+const sseService = require("./services/sseService");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -41,19 +43,72 @@ app.post("/api/isochrone", async (req, res) => {
 });
 
 app.post("/api/pois", async (req, res) => {
+  const { polygon, category } = req.body;
   try {
-    const { polygon, category } = req.body;
+    const cachedPOIs = await cacheService.getCachedPOIs(polygon, category);
 
-    if (!polygon || !category) {
-      return res.status(400).json({ error: "Polygon and category required" });
+    // If we have cached POIs, return them immediately
+    if (cachedPOIs.length > 0) {
+      res.json({
+        pois: cachedPOIs,
+        category,
+        count: cachedPOIs.length,
+        cached: true,
+      });
+
+      // Still check for updates in background
+      setImmediate(async () => {
+        try {
+          const uncachedArea = cacheService.getUncachedArea(polygon, category);
+          if (uncachedArea) {
+            console.log("Checking for new POIs in uncached areas...");
+            const newPOIs = await getPOIs(uncachedArea, category);
+            if (newPOIs.length > 0) {
+              await cacheService.cachePOIs(uncachedArea, category, newPOIs);
+              sseService.broadcastPOIUpdates(category, newPOIs, polygon);
+            }
+          }
+        } catch (bgError) {
+          console.error("Background POI fetch failed:", bgError);
+        }
+      });
+    } else {
+      // No cache - fetch immediately and return results
+      console.log("No cached POIs found, fetching from API...");
+      const pois = await getPOIs(polygon, category);
+      
+      // Cache the results for next time
+      await cacheService.cachePOIs(polygon, category, pois);
+      
+      res.json({ 
+        pois, 
+        category, 
+        count: pois.length, 
+        cached: false 
+      });
     }
-
-    const pois = await getPOIs(polygon, category);
-    res.json({ pois, category, count: pois.length });
   } catch (error) {
-    console.error("POI API error:", error.message);
+    console.error("POI service failed:", error);
     res.status(500).json({ error: "Failed to fetch POIs" });
   }
+});
+
+app.get("/api/pois/stream/:category", (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "Access-Control-Allow-Origin": "http://localhost:3000",
+    "Access-Control-Allow-Credentials": "true",
+  });
+
+  const clientId = sseService.addConnection(req.params.category, res);
+  req.on("close", () =>
+    sseService.removeConnection(req.params.category, clientId),
+  );
+  req.on("aborted", () =>
+    sseService.removeConnection(req.params.category, clientId),
+  );
 });
 
 app.listen(PORT, () => {

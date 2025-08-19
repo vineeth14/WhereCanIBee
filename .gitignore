@@ -102,3 +102,9 @@ Thumbs.db
 
 # Claude Code files
 CLAUDE.md
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+backend/poi_cache.db*
