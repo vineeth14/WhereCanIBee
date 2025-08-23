@@ -1,11 +1,11 @@
 const axios = require("axios");
 
-const getIsochrone = async (lat, lng) => {
+const getIsochrone = async (lat, lng, duration) => {
   const response = await axios.get(
     `https://api.mapbox.com/isochrone/v1/mapbox/walking/${lng},${lat}`,
     {
       params: {
-        contours_minutes: 30,
+        contours_minutes: duration,
         polygons: true,
         access_token: process.env.MAPBOX_API_KEY,
       },

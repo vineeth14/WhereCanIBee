@@ -5,12 +5,41 @@ import { useGeolocation } from "../../hooks/useGeolocation";
 import { healthCheck, api, getWalkingArea, getPOIs } from "../../services/api";
 import "leaflet/dist/leaflet.css";
 import { useSSEPOIUpdates } from '../../hooks/useSSEPOIUpdates';
+import DurationSelector from '../DurationSelector/DurationSelector';
+import LocationInput from '../LocationInput/LocationInput';
 
 // Component to handle map events
-const MapEventHandler = ({ onZoomEnd }: { onZoomEnd: (zoom: number) => void }) => {
+const MapEventHandler = ({ 
+  onZoomEnd, 
+  onMapClick, 
+  useMapClick,
+  onViewportChange
+}: { 
+  onZoomEnd: (zoom: number) => void;
+  onMapClick?: (lat: number, lng: number) => void;
+  useMapClick: boolean;
+  onViewportChange?: () => void;
+}) => {
   useMapEvents({
     zoomend: (e) => {
-      onZoomEnd(e.target.getZoom());
+      const newZoom = e.target.getZoom();
+      console.log(`Zoom changed to: ${newZoom}`);
+      onZoomEnd(newZoom);
+      if (onViewportChange) {
+        // Debounce viewport changes
+        setTimeout(onViewportChange, 300);
+      }
+    },
+    moveend: (e) => {
+      if (onViewportChange) {
+        // Debounce viewport changes  
+        setTimeout(onViewportChange, 300);
+      }
+    },
+    click: (e) => {
+      if (useMapClick && onMapClick) {
+        onMapClick(e.latlng.lat, e.latlng.lng);
+      }
     },
   });
   return null;
@@ -20,6 +49,10 @@ const Map: React.FC = () => {
   const { location, loading, error, getCurrentLocation } = useGeolocation();
   const [isochrone, setIsochrone] = useState(null);
   const [loadingIsochrone, setLoadingIsochrone] = useState(false);
+  const [selectedDuration, setSelectedDuration] = useState(15);
+  const [useMapClick, setUseMapClick] = useState(true);
+  const [currentCenter, setCurrentCenter] = useState<{lat: number, lng: number} | null>(null);
+  const [selectedLocation, setSelectedLocation] = useState<{lat: number, lng: number, name: string} | null>(null);
   const [pois, setPois] = useState<{ restaurants: any[]; recreation: any[] }>({
     restaurants: [],
     recreation: [],
@@ -40,19 +73,75 @@ const Map: React.FC = () => {
   const [currentZoom, setCurrentZoom] = useState(14);
   const mapRef = useRef<L.Map | null>(null);
 
-  const handleShowWalkingArea = async () => {
-    if (!mapRef.current) return;
+  const handleShowWalkingArea = async (lat?: number, lng?: number) => {
     setLoadingIsochrone(true);
     try {
-      const map = mapRef.current;
-      const center = map.getCenter();
-      const result = await getWalkingArea(center.lat, center.lng);
-      console.log("Isochrone data:", result);
-      console.log(
-        "First feature geometry type:",
-        result.features?.[0]?.geometry?.type,
-      );
-      setIsochrone(result);
+      let centerLat, centerLng;
+      
+      if (lat !== undefined && lng !== undefined) {
+        centerLat = lat;
+        centerLng = lng;
+      } else if (currentCenter) {
+        centerLat = currentCenter.lat;
+        centerLng = currentCenter.lng;
+      } else if (mapRef.current) {
+        const center = mapRef.current.getCenter();
+        centerLat = center.lat;
+        centerLng = center.lng;
+      } else {
+        throw new Error('No valid center coordinates available');
+      }
+      
+      console.log(`Generating isochrone for ${selectedDuration} minutes at ${centerLat}, ${centerLng}`);
+      
+      const result = await api.post('/isochrone', {
+        lat: centerLat,
+        lng: centerLng,
+        duration: selectedDuration
+      });
+      
+      console.log("Isochrone data:", result.data);
+      console.log("Setting new isochrone state...");
+      
+      setIsochrone(result.data);
+      setCurrentCenter({ lat: centerLat, lng: centerLng });
+      setSelectedLocation({ lat: centerLat, lng: centerLng, name: "Isochrone Center" });
+      
+      // Clear existing POIs and reload any checked categories
+      const currentRestaurantState = showCategories.restaurants;
+      const currentRecreationState = showCategories.recreation;
+      
+      setPois({ restaurants: [], recreation: [] });
+      
+      // Reload POIs for checked categories with new isochrone
+      setTimeout(async () => {
+        if (currentRestaurantState) {
+          console.log("Reloading restaurant POIs for new isochrone...");
+          setLoadingPOIs(prev => ({ ...prev, restaurants: true }));
+          try {
+            const restaurantResult = await getPOIs(result.data, 'restaurants');
+            setPois(prev => ({ ...prev, restaurants: restaurantResult.pois }));
+          } catch (error) {
+            console.error('Failed to reload restaurant POIs:', error);
+          } finally {
+            setLoadingPOIs(prev => ({ ...prev, restaurants: false }));
+          }
+        }
+        
+        if (currentRecreationState) {
+          console.log("Reloading recreation POIs for new isochrone...");
+          setLoadingPOIs(prev => ({ ...prev, recreation: true }));
+          try {
+            const recreationResult = await getPOIs(result.data, 'recreation');
+            setPois(prev => ({ ...prev, recreation: recreationResult.pois }));
+          } catch (error) {
+            console.error('Failed to reload recreation POIs:', error);
+          } finally {
+            setLoadingPOIs(prev => ({ ...prev, recreation: false }));
+          }
+        }
+      }, 100);
+      
     } catch (error) {
       console.error("Failed to get walking area:", error);
     } finally {
@@ -72,11 +161,11 @@ const Map: React.FC = () => {
     getCurrentLocation();
   }, []);
 
-  // Update polygon hash when isochrone changes
+  // Update polygon hash when isochrone or duration changes
   useEffect(() => {
     const generatePolygonHash = async () => {
       if (isochrone) {
-        const data = JSON.stringify(isochrone);
+        const data = JSON.stringify(isochrone) + selectedDuration.toString();
         const encoder = new TextEncoder();
         const dataBuffer = encoder.encode(data);
         const hashBuffer = await crypto.subtle.digest('SHA-256', dataBuffer);
@@ -87,7 +176,8 @@ const Map: React.FC = () => {
     };
     
     generatePolygonHash();
-  }, [isochrone]);
+  }, [isochrone, selectedDuration]);
+
 
   // SSE update handler
   const handleSSEPOIUpdate = (category: 'restaurants' | 'recreation', newPOIs: any[]) => {
@@ -182,6 +272,38 @@ const Map: React.FC = () => {
     iconAnchor: [(size + 4)/2, (size + 4)/2]
   });
 
+  const createSelectedLocationIcon = (size = 28) => new L.DivIcon({
+    html: `
+      <div class="material-marker selected-location-marker" style="
+        width: ${size + 8}px;
+        height: ${size + 8}px;
+        background: #ffffff;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 3px 12px rgba(0,0,0,0.4);
+        border: 3px solid #3498db;
+        animation: pulse 2s infinite;
+      ">
+        <span class="material-icons" style="
+          font-size: ${size}px;
+          color: #3498db;
+        ">location_on</span>
+      </div>
+      <style>
+        @keyframes pulse {
+          0% { box-shadow: 0 3px 12px rgba(0,0,0,0.4), 0 0 0 0 rgba(52, 152, 219, 0.7); }
+          70% { box-shadow: 0 3px 12px rgba(0,0,0,0.4), 0 0 0 10px rgba(52, 152, 219, 0); }
+          100% { box-shadow: 0 3px 12px rgba(0,0,0,0.4), 0 0 0 0 rgba(52, 152, 219, 0); }
+        }
+      </style>
+    `,
+    className: 'material-marker-container selected-location',
+    iconSize: [size + 8, size + 8],
+    iconAnchor: [(size + 8)/2, size + 8]
+  });
+
   // Distance-based clustering to prevent overcrowding
   const clusterNearbyPOIs = (poisArray: any[], maxDistance: number) => {
     const clustered = [];
@@ -219,6 +341,7 @@ const Map: React.FC = () => {
 
   // Aggressive filtering and ranking based on zoom level
   const getFilteredAndRankedPOIs = (poisArray: any[], category: 'restaurants' | 'recreation') => {
+    console.log(`Filtering ${category} POIs at zoom ${currentZoom}: input ${poisArray.length} POIs`);
     // First, rank POIs by quality/importance
     const rankedPOIs = poisArray.sort((a, b) => {
       // Priority ranking system
@@ -246,26 +369,39 @@ const Map: React.FC = () => {
     
     // Apply distance-based clustering based on zoom
     let clusteredPOIs;
-    if (currentZoom < 14) {
+    if (currentZoom < 13) {
       clusteredPOIs = clusterNearbyPOIs(rankedPOIs, 0.01); // Large clustering distance
-    } else if (currentZoom < 16) {
+    } else if (currentZoom < 15) {
       clusteredPOIs = clusterNearbyPOIs(rankedPOIs, 0.005); // Medium clustering
-    } else {
+    } else if (currentZoom < 17) {
       clusteredPOIs = clusterNearbyPOIs(rankedPOIs, 0.002); // Fine clustering
+    } else {
+      clusteredPOIs = clusterNearbyPOIs(rankedPOIs, 0.001); // Minimal clustering for high zoom
     }
     
     // Progressive zoom-based limits - more POIs as you zoom in
+    let finalCount;
     if (currentZoom < 12) {
-      return clusteredPOIs.slice(0, 5); // Show top 5 at very low zoom
+      finalCount = 8;
+    } else if (currentZoom < 13) {
+      finalCount = 15;
     } else if (currentZoom < 14) {
-      return clusteredPOIs.slice(0, 10); // Top 10 at low-medium zoom
+      finalCount = 25;
+    } else if (currentZoom < 15) {
+      finalCount = 40;
     } else if (currentZoom < 16) {
-      return clusteredPOIs.slice(0, 20); // Top 20 at medium zoom
+      finalCount = 60;
+    } else if (currentZoom < 17) {
+      finalCount = 80;
     } else if (currentZoom < 18) {
-      return clusteredPOIs.slice(0, 35); // More detail at high zoom
+      finalCount = 100;
     } else {
-      return clusteredPOIs; // Show all at very high zoom
+      finalCount = clusteredPOIs.length;
     }
+    
+    const result = clusteredPOIs.slice(0, finalCount);
+    console.log(`Zoom ${currentZoom}: showing ${result.length} out of ${clusteredPOIs.length} ${category} POIs`);
+    return result;
   };
 
   // Smart icon selection based on zoom level
@@ -302,6 +438,7 @@ const Map: React.FC = () => {
     setShowCategories((prev) => ({ ...prev, [category]: newState }));
 
     if (newState && pois[category].length === 0) {
+      // Load POIs for entire isochrone area (cached/API call)
       setLoadingPOIs((prev) => ({ ...prev, [category]: true }));
       try {
         const result = await getPOIs(isochrone, category);
@@ -316,79 +453,197 @@ const Map: React.FC = () => {
       }
     }
   };
+  const handleLocationSelect = (lat: number, lng: number, name: string) => {
+    setCurrentCenter({ lat, lng });
+    setSelectedLocation({ lat, lng, name });
+    if (mapRef.current) {
+      mapRef.current.setView([lat, lng], 14);
+    }
+  };
+
+  const handleMapClick = (lat: number, lng: number) => {
+    setCurrentCenter({ lat, lng });
+    setSelectedLocation({ lat, lng, name: "Selected Location" });
+  };
+
+  const handleToggleInputMode = () => {
+    setUseMapClick(!useMapClick);
+  };
+
+  // Convert map bounds to GeoJSON polygon for POI queries
+  const boundsToGeoJSON = (bounds: L.LatLngBounds) => {
+    const sw = bounds.getSouthWest();
+    const ne = bounds.getNorthEast();
+    const nw = L.latLng(ne.lat, sw.lng);
+    const se = L.latLng(sw.lat, ne.lng);
+    
+    return {
+      type: "FeatureCollection",
+      features: [{
+        type: "Feature",
+        geometry: {
+          type: "Polygon",
+          coordinates: [[
+            [sw.lng, sw.lat],
+            [se.lng, se.lat], 
+            [ne.lng, ne.lat],
+            [nw.lng, nw.lat],
+            [sw.lng, sw.lat]
+          ]]
+        }
+      }]
+    };
+  };
+
+  // Filter POIs to show only those visible in current viewport
+  const getViewportFilteredPOIs = (poisArray: any[]) => {
+    if (!mapRef.current) return poisArray;
+    
+    const bounds = mapRef.current.getBounds();
+    
+    return poisArray.filter(poi => {
+      return bounds.contains([poi.lat, poi.lng]);
+    });
+  };
+
+  // Handle viewport changes (zoom/pan) - just trigger re-render, no API calls
+  const handleViewportChange = () => {
+    // Force re-render by updating a timestamp
+    setLastPOIUpdate(Date.now());
+  };
+
   return (
     <div style={{ height: "100vh", width: "100%", position: "relative" }}>
+      {/* Control Panel */}
       <div
         style={{
           position: "absolute",
-          bottom: "10px",
-          right: "10px",
+          top: "10px",
+          left: "10px",
           zIndex: 1000,
-          display: "flex",
-          gap: "10px",
           backgroundColor: "white",
-          padding: "10px",
-          borderRadius: "5px",
-          boxShadow: "0 2px 4px rgba(0,0,0,0.1)",
+          padding: "15px",
+          borderRadius: "8px",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+          minWidth: "280px",
         }}
       >
+        <DurationSelector 
+          selectedDuration={selectedDuration}
+          onDurationChange={setSelectedDuration}
+        />
+        
+        <LocationInput 
+          useMapClick={useMapClick}
+          onToggleMode={handleToggleInputMode}
+          onLocationSelect={handleLocationSelect}
+          userLocation={location ? { lat: location.latitude, lng: location.longitude } : null}
+        />
+        
         <button
-          onClick={handleShowWalkingArea}
-          disabled={loadingIsochrone}
+          onClick={() => handleShowWalkingArea()}
+          disabled={loadingIsochrone || (!currentCenter && useMapClick)}
           style={{
             backgroundColor: "#9b59b6",
             color: "white",
             border: "none",
-            padding: "10px 15px",
-            borderRadius: "5px",
-            cursor: loadingIsochrone ? "not-allowed" : "pointer",
-            opacity: loadingIsochrone ? 0.6 : 1,
+            padding: "12px 20px",
+            borderRadius: "6px",
+            cursor: (loadingIsochrone || (!currentCenter && useMapClick)) ? "not-allowed" : "pointer",
+            opacity: (loadingIsochrone || (!currentCenter && useMapClick)) ? 0.6 : 1,
+            width: "100%",
+            fontSize: "14px",
+            fontWeight: "500",
           }}
         >
-          {loadingIsochrone ? "Loading ..." : "Show 15min walk area"}
+          {loadingIsochrone ? "Loading..." : `Generate ${selectedDuration}min Walkable Area`}
         </button>
+      </div>
 
-        {isochrone && (
-          <div style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
-            <label style={{ fontSize: "12px", fontWeight: "bold" }}>Show POIs:</label>
+      {/* POI Controls Panel */}
+      {isochrone && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: "10px",
+            right: "10px",
+            zIndex: 1000,
+            backgroundColor: "white",
+            padding: "15px",
+            borderRadius: "8px",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+          }}
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            <label style={{ fontSize: "14px", fontWeight: "600", color: "#333" }}>Points of Interest:</label>
             
-            <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "12px" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px" }}>
               <input
                 type="checkbox"
                 checked={showCategories.restaurants}
                 onChange={() => handleCategoryToggle('restaurants')}
                 disabled={loadingPOIs.restaurants}
+                style={{ transform: "scale(1.1)" }}
               />
-              Restaurants {loadingPOIs.restaurants && "(loading...)"}
+              🍽️ Restaurants {loadingPOIs.restaurants && "(loading...)"}
             </label>
 
-            <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "12px" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px" }}>
               <input
                 type="checkbox"
                 checked={showCategories.recreation}
                 onChange={() => handleCategoryToggle('recreation')}
                 disabled={loadingPOIs.recreation}
+                style={{ transform: "scale(1.1)" }}
               />
-              Recreation {loadingPOIs.recreation && "(loading...)"}
+              🏞️ Recreation {loadingPOIs.recreation && "(loading...)"}
             </label>
           </div>
-        )}
-      </div>
+        </div>
+      )}
       <MapContainer
         center={center}
         zoom={14}
         style={{ height: "100%", width: "100%" }}
         ref={mapRef}
       >
-        <MapEventHandler onZoomEnd={setCurrentZoom} />
+        <MapEventHandler 
+          onZoomEnd={setCurrentZoom} 
+          onMapClick={handleMapClick}
+          useMapClick={useMapClick}
+          onViewportChange={handleViewportChange}
+        />
         <TileLayer 
           url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
           attribution="&copy; <a href='https://www.openstreetmap.org/copyright'>OpenStreetMap</a> contributors &copy; <a href='https://carto.com/attributions'>CARTO</a>"
         />
-        {isochrone && <GeoJSON data={isochrone} style={isochroneStyle} />}
+        {isochrone && (
+          <GeoJSON 
+            key={`isochrone-${selectedDuration}-${Date.now()}`}
+            data={isochrone} 
+            style={isochroneStyle} 
+          />
+        )}
         
-        {/* POI Markers with Aggressive Filtering & Ranking */}
-        {showCategories.restaurants && getFilteredAndRankedPOIs(pois.restaurants, 'restaurants').map(poi => (
+        {/* Selected Location Marker */}
+        {selectedLocation && (
+          <Marker 
+            position={[selectedLocation.lat, selectedLocation.lng]} 
+            icon={createSelectedLocationIcon()}
+          >
+            <Popup>
+              <div>
+                <strong>📍 {selectedLocation.name}</strong><br/>
+                <small>Selected Location</small><br/>
+                <small>Lat: {selectedLocation.lat.toFixed(6)}</small><br/>
+                <small>Lng: {selectedLocation.lng.toFixed(6)}</small>
+              </div>
+            </Popup>
+          </Marker>
+        )}
+        
+        {/* POI Markers with Viewport + Zoom Filtering & Ranking */}
+        {showCategories.restaurants && getFilteredAndRankedPOIs(getViewportFilteredPOIs(pois.restaurants), 'restaurants').map(poi => (
           <Marker key={poi.id} position={[poi.lat, poi.lng]} icon={getMarkerIcon('restaurants')}>
             <Popup>
               <div>
@@ -401,7 +656,7 @@ const Map: React.FC = () => {
           </Marker>
         ))}
 
-        {showCategories.recreation && getFilteredAndRankedPOIs(pois.recreation, 'recreation').map(poi => (
+        {showCategories.recreation && getFilteredAndRankedPOIs(getViewportFilteredPOIs(pois.recreation), 'recreation').map(poi => (
           <Marker key={poi.id} position={[poi.lat, poi.lng]} icon={getMarkerIcon('recreation')}>
             <Popup>
               <div>

@@ -3,6 +3,8 @@ class SSEService {
     this.connections = new Map();
   }
 
+  // === CONNECTION MANAGEMENT ===
+
   addConnection(category, res) {
     if (!this.connections.has(category)) {
       this.connections.set(category, new Map());
@@ -21,8 +23,15 @@ class SSEService {
     }
   }
 
+  // === BROADCASTING ===
+
+  /**
+   * Broadcasts POI updates to all connected clients for a specific category
+   * Includes polygon hash for frontend validation
+   */
   broadcastPOIUpdates(category, newPOIs, polygon) {
     if (!this.connections.has(category) || newPOIs.length === 0) return;
+    
     const clients = this.connections.get(category);
     const updateData = {
       type: "poi_update",
@@ -35,6 +44,7 @@ class SSEService {
         .update(JSON.stringify(polygon))
         .digest("hex"),
     };
+    
     clients.forEach((res, clientId) => {
       try {
         res.write(`data: ${JSON.stringify(updateData)}\n\n`);

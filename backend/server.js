@@ -1,8 +1,12 @@
+// Core dependencies
 const express = require("express");
 const cors = require("cors");
-
 require("dotenv").config();
+
+// External libraries
 const axios = require("axios");
+
+// Internal services
 const { getIsochrone } = require("./services/orsService");
 const { getPOIs } = require("./services/poiService");
 const cacheService = require("./services/cacheService");
@@ -14,7 +18,8 @@ const PORT = process.env.PORT || 3001;
 app.use(
   cors({
     origin: "http://localhost:3000",
-    methods: ["GET", "POST", "PUT", "DELETE"],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "Cache-Control"],
     credentials: true,
   }),
 );
@@ -27,11 +32,18 @@ app.get("/api/health", (req, res) => {
 
 app.post("/api/isochrone", async (req, res) => {
   try {
-    const { lat, lng } = req.body;
+    const { lat, lng, duration } = req.body;
     if (!lat || !lng) {
       return res.status(400).json({ error: "Latitude and longitude required" });
     }
-    const isochroneData = await getIsochrone(lat, lng);
+    if (!duration || ![15, 30, 45, 60].includes(duration)) {
+      return res
+        .status(400)
+        .json({
+          error: "Duration is required and must be 15, 30, 45 or 60 minutes",
+        });
+    }
+    const isochroneData = await getIsochrone(lat, lng, duration);
     res.json(isochroneData);
   } catch (error) {
     console.error(
@@ -76,15 +88,15 @@ app.post("/api/pois", async (req, res) => {
       // No cache - fetch immediately and return results
       console.log("No cached POIs found, fetching from API...");
       const pois = await getPOIs(polygon, category);
-      
+
       // Cache the results for next time
       await cacheService.cachePOIs(polygon, category, pois);
-      
-      res.json({ 
-        pois, 
-        category, 
-        count: pois.length, 
-        cached: false 
+
+      res.json({
+        pois,
+        category,
+        count: pois.length,
+        cached: false,
       });
     }
   } catch (error) {
@@ -94,12 +106,14 @@ app.post("/api/pois", async (req, res) => {
 });
 
 app.get("/api/pois/stream/:category", (req, res) => {
+  // Set SSE headers without credentials since EventSource doesn't support them
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
     "Access-Control-Allow-Origin": "http://localhost:3000",
-    "Access-Control-Allow-Credentials": "true",
+    "Access-Control-Allow-Methods": "GET",
+    "Access-Control-Allow-Headers": "Cache-Control",
   });
 
   const clientId = sseService.addConnection(req.params.category, res);
