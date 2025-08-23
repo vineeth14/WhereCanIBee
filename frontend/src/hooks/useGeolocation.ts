@@ -7,7 +7,7 @@ interface Location {
 
 interface UseGeolocationReturn {
   location: Location | null;
-  loading: Boolean;
+  loading: boolean;
   error: string | null;
   getCurrentLocation: () => void;
 }
@@ -24,6 +24,7 @@ export const useGeolocation = (): UseGeolocationReturn => {
     if (!navigator.geolocation) {
       setError("Geolocation not supported");
       setLoading(false);
+      setLocation({ latitude: 40.7831, longitude: -73.9712 });
       return;
     }
 
@@ -40,6 +41,10 @@ export const useGeolocation = (): UseGeolocationReturn => {
         setLoading(false);
         setLocation({ latitude: 40.7831, longitude: -73.9712 });
       },
+      {
+        timeout: 5000,
+        enableHighAccuracy: true,
+      }
     );
   };
   return { location, loading, error, getCurrentLocation };
